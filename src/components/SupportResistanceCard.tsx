@@ -15,10 +15,10 @@ type Cell = {
   strength: 1 | 2;
 };
 
-// 2x2 grid order matches the user's enumeration (Z pattern: TL, TR, BL, BR).
+// 2x2 grid (Z pattern): TL 第一壓力, TR 第二壓力, BL 第一支撐, BR 第二支撐.
 const LAYOUT: Cell[] = [
-  { id: SR_BUILTIN_IDS.resistance2, label: '第二壓力', tone: 'resistance', strength: 2 },
   { id: SR_BUILTIN_IDS.resistance1, label: '第一壓力', tone: 'resistance', strength: 1 },
+  { id: SR_BUILTIN_IDS.resistance2, label: '第二壓力', tone: 'resistance', strength: 2 },
   { id: SR_BUILTIN_IDS.support1, label: '第一支撐', tone: 'support', strength: 1 },
   { id: SR_BUILTIN_IDS.support2, label: '第二支撐', tone: 'support', strength: 2 },
 ];
