@@ -24,7 +24,29 @@ const BUILTINS: Formula[] = [
     isBuiltin: true,
     createdAt: '1970-01-01T00:00:00.000Z',
   },
+  {
+    id: 'builtin-resistance-2',
+    name: '第二壓力價',
+    expression: 'AVG * 1.035',
+    isBuiltin: true,
+    createdAt: '1970-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'builtin-support-2',
+    name: '第二支撐價',
+    expression: 'AVG * 0.965',
+    isBuiltin: true,
+    createdAt: '1970-01-01T00:00:00.000Z',
+  },
 ];
+
+// Keys used by the 4-quadrant 壓力/支撐 card.
+export const SR_BUILTIN_IDS = {
+  resistance2: 'builtin-resistance-2',
+  resistance1: 'builtin-resistance-1',
+  support1: 'builtin-support',
+  support2: 'builtin-support-2',
+} as const;
 
 function read(): Formula[] {
   if (typeof localStorage === 'undefined') return [...BUILTINS];
@@ -35,9 +57,11 @@ function read(): Formula[] {
   }
   try {
     const parsed = JSON.parse(raw) as Formula[];
-    const byId = new Map(parsed.map((f) => [f.id, f]));
-    for (const b of BUILTINS) if (!byId.has(b.id)) byId.set(b.id, b);
-    return Array.from(byId.values());
+    // Always overwrite builtin entries with the latest definitions so name/expression
+    // updates ship to existing users; custom formulas are preserved verbatim.
+    const builtinIds = new Set(BUILTINS.map((b) => b.id));
+    const customs = parsed.filter((f) => !builtinIds.has(f.id) && !f.isBuiltin);
+    return [...BUILTINS, ...customs];
   } catch {
     write(BUILTINS);
     return [...BUILTINS];
