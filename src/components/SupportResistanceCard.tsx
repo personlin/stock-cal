@@ -97,7 +97,7 @@ export function SupportResistanceCard({ formulas, ohlc }: Props) {
                 </span>
               </div>
               <div className="font-mono text-2xl font-semibold tabular-nums">
-                {value === null ? '—' : fmtPrice(value, 0)}
+                {value === null ? '—' : fmtPrice(value)}
               </div>
             </div>
           );

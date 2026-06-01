@@ -41,7 +41,7 @@ export function FormulaList({ formulas, ohlc, onEdit, onDelete }: Props) {
             </div>
             <div className="text-right">
               <div className="font-mono text-lg tabular-nums">
-                {ohlc ? (error ? <span className="text-red-500 text-xs">{error}</span> : fmtPrice(value as number, 0)) : '—'}
+                {ohlc ? (error ? <span className="text-red-500 text-xs">{error}</span> : fmtPrice(value as number)) : '—'}
               </div>
             </div>
             <div className="flex gap-1">
