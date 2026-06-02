@@ -1,5 +1,3 @@
-import type { DailyOHLC } from '../shared/types';
-
 type Props = {
   value: { open: string; high: string; low: string; close: string };
   onChange: (next: Props['value']) => void;
@@ -31,13 +29,4 @@ export function ManualInput({ value, onChange }: Props) {
       ))}
     </div>
   );
-}
-
-export function manualToOhlc(v: Props['value']): DailyOHLC | null {
-  const open = parseFloat(v.open);
-  const high = parseFloat(v.high);
-  const low = parseFloat(v.low);
-  const close = parseFloat(v.close);
-  if (![open, high, low, close].every(Number.isFinite)) return null;
-  return { date: '手動輸入', open, high, low, close };
 }

@@ -13,6 +13,8 @@ export type QuoteResponse = {
   market: 'TWSE' | 'TPEx';
   days: DailyOHLC[];
   fetchedAt: string;
+  stale?: boolean;
+  warning?: string;
 };
 
 export type Formula = {

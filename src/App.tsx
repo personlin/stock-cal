@@ -1,13 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Plus, LineChart, Pencil } from 'lucide-react';
 import { TickerSearch } from './components/TickerSearch';
-import { ManualInput, manualToOhlc } from './components/ManualInput';
+import { ManualInput } from './components/ManualInput';
 import { OHLCTable } from './components/OHLCTable';
 import { FormulaList } from './components/FormulaList';
 import { FormulaEditor } from './components/FormulaEditor';
 import { SupportResistanceCard } from './components/SupportResistanceCard';
-import { useInvalidateQuotes, useQuote } from './api/quote';
+import { useInvalidateQuotes, useQuote, type QuoteFetchError } from './api/quote';
 import { formulaStore } from './lib/formulaStore';
+import { manualToOhlc } from './lib/manualToOhlc';
 import type { DailyOHLC, Formula } from './shared/types';
 
 type Tab = 'quote' | 'manual';
@@ -20,13 +21,9 @@ export default function App() {
   const quoteQuery = useQuote(ticker);
   const invalidate = useInvalidateQuotes();
   const [selectedDate, setSelectedDate] = useState<string>('');
-
-  useEffect(() => {
-    if (quoteQuery.data?.days.length) {
-      const last = quoteQuery.data.days[quoteQuery.data.days.length - 1];
-      setSelectedDate((prev) => prev || last.date);
-    }
-  }, [quoteQuery.data]);
+  const quoteData = quoteQuery.data;
+  const quoteError = quoteQuery.error as QuoteFetchError | null;
+  const showQuoteError = Boolean(quoteError) && (quoteQuery.isError || quoteQuery.isRefetchError);
 
   // Manual state
   const [manual, setManual] = useState({ open: '', high: '', low: '', close: '' });
@@ -42,9 +39,9 @@ export default function App() {
 
   const activeOhlc: DailyOHLC | null = useMemo(() => {
     if (tab === 'manual') return manualToOhlc(manual);
-    const days = quoteQuery.data?.days ?? [];
+    const days = quoteData?.days ?? [];
     return days.find((d) => d.date === selectedDate) ?? days[days.length - 1] ?? null;
-  }, [tab, manual, quoteQuery.data, selectedDate]);
+  }, [tab, manual, quoteData, selectedDate]);
 
   function handleSearch(q: string) {
     setSelectedDate('');
@@ -108,28 +105,41 @@ export default function App() {
                 isLoading={quoteQuery.isFetching}
               />
 
-              {quoteQuery.isError && (
+              {showQuoteError && quoteError && (
                 <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
-                  {(quoteQuery.error as Error).message}
+                  {quoteData
+                    ? `資料更新失敗：${quoteError.message} 目前仍顯示上次成功資料。`
+                    : quoteError.message}
                 </div>
               )}
 
-              {quoteQuery.data && (
+              {quoteData?.warning && (
+                <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                  {quoteData.warning}
+                </div>
+              )}
+
+              {quoteData && (
                 <>
                   <div className="text-sm text-slate-600 dark:text-slate-400">
                     <span className="font-semibold text-slate-900 dark:text-slate-100">
-                      {quoteQuery.data.ticker} {quoteQuery.data.name}
+                      {quoteData.ticker} {quoteData.name}
                     </span>
                     <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-xs dark:bg-slate-800">
-                      {quoteQuery.data.market}
+                      {quoteData.market}
                     </span>
+                    {quoteData.stale && (
+                      <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800 dark:bg-amber-900/60 dark:text-amber-200">
+                        快取資料
+                      </span>
+                    )}
                     <span className="ml-2 text-xs">
-                      抓取於 {new Date(quoteQuery.data.fetchedAt).toLocaleString('zh-TW')}
+                      抓取於 {new Date(quoteData.fetchedAt).toLocaleString('zh-TW')}
                     </span>
                   </div>
                   <OHLCTable
-                    days={quoteQuery.data.days}
-                    selectedDate={selectedDate || quoteQuery.data.days.at(-1)?.date || ''}
+                    days={quoteData.days}
+                    selectedDate={selectedDate || quoteData.days.at(-1)?.date || ''}
                     onSelect={setSelectedDate}
                   />
                   <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -138,7 +148,7 @@ export default function App() {
                 </>
               )}
 
-              {!quoteQuery.data && !quoteQuery.isFetching && !quoteQuery.isError && (
+              {!quoteData && !quoteQuery.isFetching && !showQuoteError && (
                 <p className="text-sm text-slate-500 dark:text-slate-400">
                   輸入代號或公司名稱按「查詢」，將顯示最近 5 個交易日的 OHLC。
                 </p>

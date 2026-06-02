@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { X } from 'lucide-react';
 import type { Formula } from '../shared/types';
 import { validateExpression } from '../lib/formula';
@@ -11,19 +11,21 @@ type Props = {
 };
 
 export function FormulaEditor({ open, initial, onClose, onSave }: Props) {
-  const [name, setName] = useState('');
-  const [expression, setExpression] = useState('');
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (open) {
-      setName(initial?.name ?? '');
-      setExpression(initial?.expression ?? '');
-      setError(null);
-    }
-  }, [open, initial]);
-
   if (!open) return null;
+  return (
+    <FormulaEditorDialog
+      key={initial?.id ?? 'new'}
+      initial={initial}
+      onClose={onClose}
+      onSave={onSave}
+    />
+  );
+}
+
+function FormulaEditorDialog({ initial, onClose, onSave }: Omit<Props, 'open'>) {
+  const [name, setName] = useState(initial?.name ?? '');
+  const [expression, setExpression] = useState(initial?.expression ?? '');
+  const [error, setError] = useState<string | null>(null);
 
   function handleSubmit() {
     const trimmedName = name.trim();
