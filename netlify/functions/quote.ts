@@ -176,12 +176,20 @@ async function loadIsin(): Promise<IsinEntry[]> {
   return entries;
 }
 
+async function lookupIsinByTicker(ticker: string): Promise<IsinEntry | null> {
+  try {
+    const all = await loadIsin();
+    return all.find((e) => e.ticker === ticker) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function resolveTicker(query: string): Promise<IsinEntry | null> {
   const trimmed = query.trim();
   if (!trimmed) return null;
   if (/^\d{4}$/.test(trimmed)) {
-    const all = await loadIsin();
-    const found = all.find((e) => e.ticker === trimmed);
+    const found = await lookupIsinByTicker(trimmed);
     if (found) return found;
     return { ticker: trimmed, name: trimmed, market: 'TWSE' };
   }
@@ -306,9 +314,10 @@ async function fetchNumericQuote(ticker: string): Promise<Quote | null> {
     try {
       const days = await fetchRecent5(ticker, market);
       if (days.length > 0) {
+        const isin = await lookupIsinByTicker(ticker);
         return {
           ticker,
-          name: ticker,
+          name: isin?.name ?? ticker,
           market,
           days,
           fetchedAt: new Date().toISOString(),
