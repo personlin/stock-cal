@@ -313,6 +313,113 @@ async function fetchFinMindQuote(query: string): Promise<Quote | null> {
   };
 }
 
+// Yahoo Finance 圖表 API —— 即 yfinance 套件底層所用的端點。台股代號後綴：
+// 上市(TWSE) 用 `.TW`、上櫃(TPEx) 用 `.TWO`。純 HTTP，可直接在 Node Function 內呼叫。
+const YAHOO_CHART_API = 'https://query1.finance.yahoo.com/v8/finance/chart';
+
+function marketSuffix(market: 'TWSE' | 'TPEx'): string {
+  return market === 'TWSE' ? '.TW' : '.TWO';
+}
+
+type YahooChart = {
+  chart?: {
+    result?: Array<{
+      meta?: { shortName?: string; longName?: string };
+      timestamp?: number[];
+      indicators?: {
+        quote?: Array<{
+          open?: (number | null)[];
+          high?: (number | null)[];
+          low?: (number | null)[];
+          close?: (number | null)[];
+          volume?: (number | null)[];
+        }>;
+      };
+    }>;
+  };
+};
+
+async function fetchYahooSymbol(symbol: string): Promise<{ days: DailyOHLC[]; name: string | null }> {
+  const url = `${YAHOO_CHART_API}/${encodeURIComponent(symbol)}?interval=1d&range=1mo`;
+  const res = await fetchUpstream(url, 'Yahoo');
+  const body = await readJson<YahooChart>(res, 'Yahoo');
+  const result = body.chart?.result?.[0];
+  const ts = result?.timestamp;
+  const q = result?.indicators?.quote?.[0];
+  if (!result || !ts || !q) return { days: [], name: null };
+
+  const days: DailyOHLC[] = ts
+    .map((t, i) => {
+      const vol = q.volume?.[i];
+      return {
+        // Yahoo 的每日 timestamp 為 UTC 秒數，加 8 小時換算台北日期。
+        date: new Date((t + 8 * 3600) * 1000).toISOString().slice(0, 10),
+        open: q.open?.[i] ?? NaN,
+        high: q.high?.[i] ?? NaN,
+        low: q.low?.[i] ?? NaN,
+        close: q.close?.[i] ?? NaN,
+        volume: typeof vol === 'number' ? vol : undefined,
+      };
+    })
+    .filter((d) => Number.isFinite(d.open) && Number.isFinite(d.close))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-5);
+
+  return { days, name: result.meta?.shortName ?? result.meta?.longName ?? null };
+}
+
+// 名稱／市場解析：先試 FinMind 對照表，失敗再退回 ISIN（供 Yahoo 路徑解析中文名稱用）。
+async function resolveAnySource(query: string): Promise<IsinEntry | null> {
+  try {
+    const r = await resolveFinMind(query);
+    if (r) return r;
+  } catch {
+    // ignore, fall back to ISIN
+  }
+  try {
+    return await resolveTicker(query);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchYahooQuote(query: string): Promise<Quote | null> {
+  const trimmed = query.trim();
+  const resolved = await resolveAnySource(trimmed);
+  const ticker = resolved?.ticker ?? (/^\d{4}$/.test(trimmed) ? trimmed : null);
+  if (!ticker) return null;
+
+  const markets: Array<'TWSE' | 'TPEx'> = resolved
+    ? [resolved.market, otherMarket(resolved.market)]
+    : ['TWSE', 'TPEx'];
+
+  const upstreamErrors: UpstreamFetchError[] = [];
+  for (const market of markets) {
+    try {
+      const { days, name } = await fetchYahooSymbol(`${ticker}${marketSuffix(market)}`);
+      if (days.length > 0) {
+        const chineseName = resolved?.name && resolved.name !== ticker ? resolved.name : null;
+        return {
+          ticker,
+          name: chineseName ?? name ?? ticker,
+          market,
+          days,
+          fetchedAt: new Date().toISOString(),
+        };
+      }
+    } catch (err) {
+      if (err instanceof UpstreamFetchError) {
+        upstreamErrors.push(err);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  if (upstreamErrors.length > 0) throw upstreamErrors[0];
+  return null;
+}
+
 function rocToAd(rocDate: string): string {
   const m = rocDate.match(/^(\d{2,3})\/(\d{1,2})\/(\d{1,2})$/);
   if (!m) return rocDate;
@@ -463,21 +570,27 @@ export default async function handler(req: Request): Promise<Response> {
   const cached = getCachedQuote(trimmed, QUOTE_CACHE_TTL_MS);
   if (cached) return json(200, cached);
 
-  // 優先使用 FinMind（單一 JSON API、涵蓋上市櫃，反應最快）；
-  // FinMind 失敗或查無資料時，再退回 TWSE/TPEx 原始來源。
+  // 依序嘗試快速來源：FinMind（單一 JSON、涵蓋上市櫃）→ Yahoo（yfinance 同源端點）。
+  // 兩者皆失敗或查無資料時，再退回 TWSE/TPEx 原始來源。
   let primaryError: UpstreamFetchError | null = null;
-  try {
-    const finmindQuote = await fetchFinMindQuote(trimmed);
-    if (finmindQuote) {
-      setCachedQuote(
-        [trimmed, finmindQuote.ticker, `${finmindQuote.ticker}:${finmindQuote.market}`],
-        finmindQuote,
-      );
-      return json(200, finmindQuote);
+  const fastSources: Array<{ name: string; fetch: (q: string) => Promise<Quote | null> }> = [
+    { name: 'FinMind', fetch: fetchFinMindQuote },
+    { name: 'Yahoo', fetch: fetchYahooQuote },
+  ];
+  for (const source of fastSources) {
+    try {
+      const quote = await source.fetch(trimmed);
+      if (quote) {
+        setCachedQuote([trimmed, quote.ticker, `${quote.ticker}:${quote.market}`], quote);
+        return json(200, quote);
+      }
+    } catch (err) {
+      if (err instanceof UpstreamFetchError) {
+        if (!primaryError) primaryError = err;
+      } else {
+        throw err;
+      }
     }
-  } catch (err) {
-    if (err instanceof UpstreamFetchError) primaryError = err;
-    else throw err;
   }
 
   try {

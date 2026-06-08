@@ -73,9 +73,15 @@ FinMind 未帶 token 也能用，但有較低的速率上限；建議申請免�
 
 ## 資料來源與錯誤處理
 
-- FinMind（主要、最快）：`https://api.finmindtrade.com/api/v4/data`
+資料來源依序嘗試，前者失敗或查無資料才往後退，因此通常以最快的來源回應：
+
+- **FinMind（主要、最快）**：`https://api.finmindtrade.com/api/v4/data`
   - `TaiwanStockPrice`：日 K（`open / max / min / close`，一次涵蓋上市櫃）
   - `TaiwanStockInfo`：代號 ↔ 名稱 ↔ 市場（JSON，取代 Big5 ISIN 對照表）
+- **Yahoo Finance（次要）**：`https://query1.finance.yahoo.com/v8/finance/chart/{代號}`
+  - 即 `yfinance` 套件底層所用的端點，純 HTTP 直接在 Node Function 內呼叫（不需 Python）。
+  - 台股後綴：上市用 `.TW`、上櫃用 `.TWO`（例 `2330.TW`、`5483.TWO`）。
+  - 日內最新一筆通常比 TWSE/TPEx 收盤檔更即時。
 - TWSE（備援）：`https://www.twse.com.tw/exchangeReport/STOCK_DAY`
 - TPEx（備援）：`https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock`
 - ISIN（備援的代號 ↔ 名稱對照）：`https://isin.twse.com.tw/isin/C_public.jsp`
@@ -85,9 +91,11 @@ Netlify Function 會：
 1. **優先打 FinMind**：用 `TaiwanStockInfo`（24h 快取）解析代號／名稱／市場，再用 `TaiwanStockPrice`
    一次抓近 30 天日 K 取最後 5 筆。整個查詢只需 1～2 個 JSON 請求，故反應最快。
    設定 `FINMIND_TOKEN` 環境變數可提高速率上限（見上方「設定 FinMind Token」）。
-2. **FinMind 失敗或查無資料時，自動退回 TWSE/TPEx**：四碼代號先抓 TWSE、查無再抓 TPEx；
+2. **FinMind 失敗或查無時，改打 Yahoo Finance**：對解析出的代號試 `.TW` / `.TWO`，
+   取近一個月日 K 的最後 5 筆。名稱搜尋會先用 FinMind/ISIN 對照表解出代號再查。
+3. **兩個快速來源都失敗時，再退回 TWSE/TPEx**：四碼代號先抓 TWSE、查無再抓 TPEx；
    公司名稱則透過 ISIN 對照表解析代號與市場；抓當月日 K，不足 5 筆時最多往前補 3 個月。
-3. 兩條路徑都統一正規化為 `{ date, open, high, low, close }` 陣列回傳。
+4. 所有路徑都統一正規化為 `{ date, open, high, low, close }` 陣列回傳。
 
 為降低 TWSE / TPEx / ISIN 偶發不穩造成的 `HTTP 502`：
 
