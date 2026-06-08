@@ -556,6 +556,24 @@ async function fetchNumericQuote(ticker: string): Promise<Quote | null> {
   return null;
 }
 
+// 盤後時段（台北時間週一至週五 13:45–17:00）FinMind 的當日收盤價通常尚未入庫，
+// 但 Yahoo 在 13:30 收盤撮合後約 13:45 即有當日 close，故此時段優先用 Yahoo。
+function preferYahooNow(now: Date = new Date()): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Taipei',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const weekday = parts.find((p) => p.type === 'weekday')?.value ?? '';
+  if (weekday === 'Sat' || weekday === 'Sun') return false;
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+  const minutes = hour * 60 + minute;
+  return minutes >= 13 * 60 + 45 && minutes < 17 * 60;
+}
+
 export default async function handler(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   if (req.method !== 'GET') return json(405, { error: 'Method not allowed' });
@@ -571,12 +589,13 @@ export default async function handler(req: Request): Promise<Response> {
   if (cached) return json(200, cached);
 
   // 依序嘗試快速來源：FinMind（單一 JSON、涵蓋上市櫃）→ Yahoo（yfinance 同源端點）。
+  // 但盤後時段 FinMind 當日收盤價尚未入庫，改以 Yahoo 優先。
   // 兩者皆失敗或查無資料時，再退回 TWSE/TPEx 原始來源。
   let primaryError: UpstreamFetchError | null = null;
-  const fastSources: Array<{ name: string; fetch: (q: string) => Promise<Quote | null> }> = [
-    { name: 'FinMind', fetch: fetchFinMindQuote },
-    { name: 'Yahoo', fetch: fetchYahooQuote },
-  ];
+  const finmind = { name: 'FinMind', fetch: fetchFinMindQuote };
+  const yahoo = { name: 'Yahoo', fetch: fetchYahooQuote };
+  const fastSources: Array<{ name: string; fetch: (q: string) => Promise<Quote | null> }> =
+    preferYahooNow() ? [yahoo, finmind] : [finmind, yahoo];
   for (const source of fastSources) {
     try {
       const quote = await source.fetch(trimmed);
