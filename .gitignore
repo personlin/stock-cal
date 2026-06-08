@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Env / secrets (FINMIND_TOKEN 等)
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

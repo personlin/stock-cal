@@ -19,6 +19,26 @@ npm run dev        # 純前端 (5173)，但 /api/quote 不會通
 npx netlify dev    # 前端 + Functions 一起跑，瀏覽 http://localhost:8888
 ```
 
+## 設定 FinMind Token（加速股價查詢）
+
+為加快股價反應速度，Function 會優先改用 [FinMind](https://finmindtrade.com/analysis/#/data/api) 的單一 JSON API（`https://api.finmindtrade.com/api/v4/data`），一次同時涵蓋上市(TWSE)與上櫃(TPEx)，省去逐月抓 TWSE/TPEx 與解析 Big5 ISIN 對照表的延遲。FinMind 失敗時才自動退回原本的 TWSE/TPEx 來源。
+
+FinMind 未帶 token 也能用，但有較低的速率上限；建議申請免費 token 提高上限：
+
+1. 到 <https://finmindtrade.com/> 註冊並登入
+2. 進入 **會員中心 / API Token** 頁面，產生（或複製）你的 API token
+3. 設定環境變數 `FINMIND_TOKEN`：
+
+   - **本地開發**：在專案根目錄建立 `.env`（已被 `.gitignore` 忽略），加入一行
+     ```
+     FINMIND_TOKEN=你的token
+     ```
+     `npx netlify dev` 會自動載入。
+   - **Netlify 部署**：到 Netlify 後台 **Site configuration → Environment variables → Add a variable**，
+     key 填 `FINMIND_TOKEN`、value 填你的 token，存檔後重新 deploy 即可生效。
+
+> token 只放在伺服器端的 Function 環境變數，不會出現在前端程式碼或瀏覽器。
+
 ## 自訂公式
 
 可用變數：
@@ -53,16 +73,21 @@ npx netlify dev    # 前端 + Functions 一起跑，瀏覽 http://localhost:8888
 
 ## 資料來源與錯誤處理
 
-- TWSE：`https://www.twse.com.tw/exchangeReport/STOCK_DAY`
-- TPEx：`https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock`
-- ISIN（代號 ↔ 名稱對照）：`https://isin.twse.com.tw/isin/C_public.jsp`
+- FinMind（主要、最快）：`https://api.finmindtrade.com/api/v4/data`
+  - `TaiwanStockPrice`：日 K（`open / max / min / close`，一次涵蓋上市櫃）
+  - `TaiwanStockInfo`：代號 ↔ 名稱 ↔ 市場（JSON，取代 Big5 ISIN 對照表）
+- TWSE（備援）：`https://www.twse.com.tw/exchangeReport/STOCK_DAY`
+- TPEx（備援）：`https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock`
+- ISIN（備援的代號 ↔ 名稱對照）：`https://isin.twse.com.tw/isin/C_public.jsp`
 
 Netlify Function 會：
 
-1. 四碼股票代號查詢時，先直接抓 TWSE，查無成交資料再抓 TPEx，避免每次都先依賴 ISIN 對照表。
-2. 公司名稱查詢時，才透過 ISIN 對照表解析代號與市場。
-3. 抓當月日 K，不足 5 筆時最多往前補 3 個月。
-4. 統一為 `{ date, open, high, low, close }` 陣列回傳。
+1. **優先打 FinMind**：用 `TaiwanStockInfo`（24h 快取）解析代號／名稱／市場，再用 `TaiwanStockPrice`
+   一次抓近 30 天日 K 取最後 5 筆。整個查詢只需 1～2 個 JSON 請求，故反應最快。
+   設定 `FINMIND_TOKEN` 環境變數可提高速率上限（見上方「設定 FinMind Token」）。
+2. **FinMind 失敗或查無資料時，自動退回 TWSE/TPEx**：四碼代號先抓 TWSE、查無再抓 TPEx；
+   公司名稱則透過 ISIN 對照表解析代號與市場；抓當月日 K，不足 5 筆時最多往前補 3 個月。
+3. 兩條路徑都統一正規化為 `{ date, open, high, low, close }` 陣列回傳。
 
 為降低 TWSE / TPEx / ISIN 偶發不穩造成的 `HTTP 502`：
 

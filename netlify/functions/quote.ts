@@ -22,11 +22,20 @@ type Quote = {
 type IsinEntry = { ticker: string; name: string; market: 'TWSE' | 'TPEx' };
 
 let isinCache: { at: number; entries: IsinEntry[] } | null = null;
+let finmindInfoCache: { at: number; entries: IsinEntry[] } | null = null;
 const ISIN_TTL_MS = 24 * 60 * 60 * 1000;
+const FINMIND_INFO_TTL_MS = 24 * 60 * 60 * 1000;
 const QUOTE_CACHE_TTL_MS = 5 * 60 * 1000;
 const QUOTE_STALE_TTL_MS = 24 * 60 * 60 * 1000;
 const UPSTREAM_TIMEOUT_MS = 4_000;
 const UPSTREAM_ATTEMPTS = 2;
+
+// FinMind 提供單一 JSON API 同時涵蓋上市(TWSE)與上櫃(TPEx)，速度遠快於逐月抓
+// TWSE/TPEx 再加上 Big5 的 ISIN 對照表。設定 FINMIND_TOKEN 可提高速率上限。
+const FINMIND_API = 'https://api.finmindtrade.com/api/v4/data';
+const FINMIND_TOKEN = process.env.FINMIND_TOKEN ?? '';
+// 往前抓 30 天日曆日，足以涵蓋連假後仍取得最近 5 個交易日。
+const FINMIND_LOOKBACK_DAYS = 30;
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 const SUCCESS_CACHE_CONTROL = 'public, max-age=60, s-maxage=300, stale-while-revalidate=3600';
 const STALE_CACHE_CONTROL = 'no-store';
@@ -200,6 +209,110 @@ async function resolveTicker(query: string): Promise<IsinEntry | null> {
   return partial ?? null;
 }
 
+function finmindUrl(params: Record<string, string>): string {
+  const search = new URLSearchParams(params);
+  if (FINMIND_TOKEN) search.set('token', FINMIND_TOKEN);
+  return `${FINMIND_API}?${search.toString()}`;
+}
+
+type FinMindResponse<T> = { msg?: string; status?: number; data?: T[] };
+
+// 載入 FinMind 的全市場代號 ↔ 名稱 ↔ 市場對照表（JSON，較 ISIN 的 Big5 HTML 快）。
+async function loadFinMindInfo(): Promise<IsinEntry[]> {
+  const now = Date.now();
+  if (finmindInfoCache && now - finmindInfoCache.at < FINMIND_INFO_TTL_MS) {
+    return finmindInfoCache.entries;
+  }
+
+  const res = await fetchUpstream(finmindUrl({ dataset: 'TaiwanStockInfo' }), 'FinMind');
+  const body = await readJson<
+    FinMindResponse<{ stock_id: string; stock_name: string; type: string }>
+  >(res, 'FinMind');
+
+  const entries: IsinEntry[] = [];
+  for (const row of body.data ?? []) {
+    const market = row.type === 'twse' ? 'TWSE' : row.type === 'tpex' ? 'TPEx' : null;
+    if (!market) continue; // 略過興櫃(emerging)等非上市櫃
+    if (!/^\d{4}$/.test(row.stock_id)) continue;
+    entries.push({ ticker: row.stock_id, name: row.stock_name, market });
+  }
+
+  if (entries.length > 0) finmindInfoCache = { at: now, entries };
+  if (entries.length === 0 && finmindInfoCache) return finmindInfoCache.entries;
+  return entries;
+}
+
+async function resolveFinMind(query: string): Promise<IsinEntry | null> {
+  const trimmed = query.trim();
+  if (!trimmed) return null;
+
+  let entries: IsinEntry[];
+  try {
+    entries = await loadFinMindInfo();
+  } catch {
+    // 對照表失敗時，純數字代號仍可直接查價（市場暫以 TWSE 標示）。
+    if (/^\d{4}$/.test(trimmed)) return { ticker: trimmed, name: trimmed, market: 'TWSE' };
+    return null;
+  }
+
+  if (/^\d{4}$/.test(trimmed)) {
+    const found = entries.find((e) => e.ticker === trimmed);
+    return found ?? { ticker: trimmed, name: trimmed, market: 'TWSE' };
+  }
+  const exact = entries.find((e) => e.name === trimmed);
+  if (exact) return exact;
+  const partial = entries.find((e) => e.name.includes(trimmed));
+  return partial ?? null;
+}
+
+async function fetchFinMindDays(ticker: string): Promise<DailyOHLC[]> {
+  const start = new Date(Date.now() - FINMIND_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const startDate = start.toISOString().slice(0, 10);
+  const res = await fetchUpstream(
+    finmindUrl({ dataset: 'TaiwanStockPrice', data_id: ticker, start_date: startDate }),
+    'FinMind',
+  );
+  const body = await readJson<
+    FinMindResponse<{
+      date: string;
+      open: number;
+      max: number;
+      min: number;
+      close: number;
+      Trading_Volume?: number;
+    }>
+  >(res, 'FinMind');
+
+  return (body.data ?? [])
+    .map((row) => ({
+      date: row.date,
+      open: row.open,
+      high: row.max,
+      low: row.min,
+      close: row.close,
+      volume: row.Trading_Volume,
+    }))
+    .filter((d) => Number.isFinite(d.open) && Number.isFinite(d.close))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-5);
+}
+
+async function fetchFinMindQuote(query: string): Promise<Quote | null> {
+  const resolved = await resolveFinMind(query);
+  if (!resolved) return null;
+
+  const days = await fetchFinMindDays(resolved.ticker);
+  if (days.length === 0) return null;
+
+  return {
+    ticker: resolved.ticker,
+    name: resolved.name,
+    market: resolved.market,
+    days,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
 function rocToAd(rocDate: string): string {
   const m = rocDate.match(/^(\d{2,3})\/(\d{1,2})\/(\d{1,2})$/);
   if (!m) return rocDate;
@@ -350,6 +463,23 @@ export default async function handler(req: Request): Promise<Response> {
   const cached = getCachedQuote(trimmed, QUOTE_CACHE_TTL_MS);
   if (cached) return json(200, cached);
 
+  // 優先使用 FinMind（單一 JSON API、涵蓋上市櫃，反應最快）；
+  // FinMind 失敗或查無資料時，再退回 TWSE/TPEx 原始來源。
+  let primaryError: UpstreamFetchError | null = null;
+  try {
+    const finmindQuote = await fetchFinMindQuote(trimmed);
+    if (finmindQuote) {
+      setCachedQuote(
+        [trimmed, finmindQuote.ticker, `${finmindQuote.ticker}:${finmindQuote.market}`],
+        finmindQuote,
+      );
+      return json(200, finmindQuote);
+    }
+  } catch (err) {
+    if (err instanceof UpstreamFetchError) primaryError = err;
+    else throw err;
+  }
+
   try {
     const quote = /^\d{4}$/.test(trimmed)
       ? await fetchNumericQuote(trimmed)
@@ -360,6 +490,7 @@ export default async function handler(req: Request): Promise<Response> {
         })();
 
     if (!quote) {
+      if (primaryError) throw primaryError;
       return json(404, { error: `查無 "${query}" 的近期成交資料` });
     }
 
